@@ -15,12 +15,19 @@ serverPort = 6788
 # Bind the socket to server address and server port
 serverSocket.bind(("", serverPort))
 
+serialDevice = "/dev/ttyAMA0"
+serialPort = serial.Serial(serialDevice, baudRate, timeout 
+
 # Listen to at most 1 connection at a time
 serverSocket.listen(1)
 
 # Server should be up and running and listening to the incoming connections
 
 while True:
+
+
+		port.write("\r\nSay something:")
+    	rcv = port.read(10)
         print('The server is ready to receive')
 
         # Set up a new connection from the client
