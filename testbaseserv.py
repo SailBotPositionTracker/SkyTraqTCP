@@ -44,11 +44,16 @@ def eprint(mess, func_name):
     sys.stdout.write('[' + func_name + ']: ' + mess + '\n')
 
 def handle_tracker_connections():
-    #TODO try/catch/finally for disconnections
+    #TODO creating a thread for each connection might perform better than a for loop here for large numbers of trackers
     while True:
-        for connection in trackserv_conn_list:
-            data = connection.recv(4096)
-            if data != "":
+        readable, _, _ = select.select(trackserv_conn_list, [], [], 1)
+        for connection in readable:
+            try:
+                data = connection.recv(4096)
+            except socket.error as err:
+                eprint(tracker_id + ': socket error: ' + str(err), TRACKSERV)
+                continue
+            if data != b'':
                 #TODO for testing
                 tracker_id = "T1234"
                 #print(len(data))
@@ -57,12 +62,11 @@ def handle_tracker_connections():
                 #TODO for testing
                 gps_message = data
                 #gps_message = parts[1]
-                #TODO commented out for cmdline readability
-                #eprint(tracker_id + ': received gps message', TRACKSERV)
+                #eprint(tracker_id + ': received gps message: ' + str(gps_message), TRACKSERV)
                 #send its data along to its associated RTKLIB
                 tracker_input_map[tracker_id].sendall(gps_message)
             else:
-                #tracker connection closed, clean everything up
+                #tracker connection closed remotely, clean everything up
                 eprint(tracker_id + ': socket closed', TRACKSERV)
                 connection.close()
                 trackserv_conn_list.remove(connection)
@@ -143,9 +147,6 @@ def output_sock(tracker_id, output_port):
         except socket.error as err:
             eprint(tracker_id + ': socket error: ' + str(err), RTKOUTCLI)
             break
-        except:
-            eprint(tracker_id + ': unexpected socket error: ' + sys.exc_info()[0], RTKOUTCLI)
-            raise
         if data != b'':
             eprint(tracker_id + ': RTKLIB message: "' + str(data) + '"', RTKOUTCLI)
             #ignore message if first character is % (RTKLIB headers)
