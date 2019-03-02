@@ -20,19 +20,19 @@ CONFIG_FILE = '../rtk_test.conf'
 #static IP address for base station
 IP = '192.168.4.1'
 #port for tracker server
-TRACKSERV_PORT = 8001
+TRACKSERV_PORT = 8000
 TRACKSERV_ADDR = (IP, TRACKSERV_PORT)
 
 #port for aggreggation server
-AGGSERV_PORT = 9001
+AGGSERV_PORT = 9000
 AGGSERV_ADDR = (IP, AGGSERV_PORT)
 
 #tracker server print abbreviation
 TRACKSERV = "TRACK_SERV"
 #aggregation server print abbreviation
 AGGSERV = "AGG_SERV"
-#RTKLIB output server print abbreviation
-RTKOUTSERV = "RTKLIB_OUT_SERV"
+#RTKLIB output client print abbreviation
+RTKOUTCLI = "RTKLIB_OUT_CLI"
 
 #map from tracker IDs to TCP client objects
 tracker_input_map = {}
@@ -72,8 +72,6 @@ def handle_tracker_connections():
 def run_tracker_server():
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    #60 second timeout
-    sock.settimeout(60)
     eprint('(' + TRACKSERV_ADDR[0] + ":" + str(TRACKSERV_ADDR[1]) + '): starting up tracker server', TRACKSERV)
     sock.bind(TRACKSERV_ADDR)
     #allow a maximum of 200 connected boats
@@ -92,19 +90,18 @@ def run_tracker_server():
             input_port = get_free_tcp_port()
             output_port = get_free_tcp_port()
             #spawn RTKLIB process with these params
-            _thread.start_new_thread(output_sock, (tracker_id, output_port))
             spawn_rtklib(input_port, output_port, tracker_id)
             time.sleep(3)
+            _thread.start_new_thread(output_sock, (tracker_id, output_port))
             input_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             input_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            #60 second timeout for input from tracker
-            input_sock.settimeout(60)
             input_sock_address = ('127.0.0.1', input_port)
             input_sock.connect(input_sock_address)
             tracker_input_map[tracker_id] = input_sock
             trackserv_conn_list.append(connection)
 
 def spawn_rtklib(input_port, output_port, tracker_id):
+    eprint('RTKLIB input port: ' + str(input_port) + ', output port: ' + str(output_port), TRACKSERV)
     new_config = CONFIG
     #set input
     new_config += "\ninpstr1-path       =127.0.0.1:" + str(input_port)
@@ -134,44 +131,33 @@ def run_aggregator_server():
             aggserv_conn_list.append(connection)
 
 def output_sock(tracker_id, output_port):
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    #60 second timeout for output from RTKLIB
-    server_address = ('127.0.0.1', output_port)
-    sock.bind(server_address)
-    #allow only one connection to this output server
-    sock.listen(1)
-    eprint(tracker_id + '(' + server_address[0] + ":" + str(server_address[1]) + '): started up RTKLIB output server', RTKOUTSERV)
-    connection = sock.accept()[0]
-    eprint(tracker_id + ': output connection established with RTKLIB', RTKOUTSERV)
+    output_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    output_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    output_sock_address = ('127.0.0.1', output_port)
+    eprint(tracker_id + '(' + output_sock_address[0] + ":" + str(output_sock_address[1]) + '): started up RTKLIB output client', RTKOUTCLI)
+    output_sock.connect(output_sock_address)
+    eprint(tracker_id + ': output connection established with RTKLIB', RTKOUTCLI)
     while True:
-        print("CHECKING")
-        ready = select.select([connection], [], [], 60)
-        print("DONE CHECKING")
-        if ready[0]:
-            try:
-                print("READING")
-                data = connection.recv(1024)
-                print("DONE READING")
-            except socket.error as err:
-                eprint(tracker_id + ': socket error: ' + str(err), RTKOUTSERV)
-                break
-            except:
-                print("Unexpected error: ", sys.exc_info()[0])
-                raise
-            if data != b'':
-                eprint(tracker_id + ': RTKLIB message: "' + str(data) + '"', RTKOUTSERV)
-                #ignore message if first character is % (RTKLIB headers)
-                if data[0] != 37:
-                    print("SENDING DATA")
-                    parsed_data = parse_data_from_rtklib(tracker_id, data)
-                    for ext_conn in aggserv_conn_list:
-                        print("SENDING DATA LOOP")
-                        ext_conn.sendall(parsed_data)
-            else:
-                eprint(tracker_id + ': socket closed', RTKOUTSERV)
-                break
-    connection.close()
+        try:
+            data = output_sock.recv(1024)
+        except socket.error as err:
+            eprint(tracker_id + ': socket error: ' + str(err), RTKOUTCLI)
+            break
+        except:
+            eprint(tracker_id + ': unexpected socket error: ' + sys.exc_info()[0], RTKOUTCLI)
+            raise
+        if data != b'':
+            eprint(tracker_id + ': RTKLIB message: "' + str(data) + '"', RTKOUTCLI)
+            #ignore message if first character is % (RTKLIB headers)
+            if data[0] != 37:
+                parsed_data = parse_data_from_rtklib(tracker_id, data)
+                for ext_conn in aggserv_conn_list:
+                    ext_conn.sendall(parsed_data)
+        else:
+            eprint(tracker_id + ': socket closed', RTKOUTCLI)
+            break
+    #TODO is this correct?
+    output_sock.close()
 
 def parse_data_from_rtklib(tracker_id, data):
     #input format example: '2038, 417928.999, 1.000, 2.000, 3.000, 5, 7, 6.6558, 3.1100, 2.8179, -3.3301, 1.9243, -3.2028, 0.00, 0.0'
@@ -183,7 +169,6 @@ def parse_data_from_rtklib(tracker_id, data):
     north = "{:14.4f}".format(float(data_parts[3]))
     out_str = "{},{},{},{},{}".format(tracker_id, gpst_week, gpst_seconds, east, north)
     return out_str.encode('UTF-8')
-
 
 if __name__ == "__main__":
     with open(CONFIG_FILE, 'r') as myfile:
