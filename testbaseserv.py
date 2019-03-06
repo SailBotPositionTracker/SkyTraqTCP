@@ -118,7 +118,7 @@ def spawn_rtklib(input_port, output_port, tracker_id):
     new_file.close()
     #start the RTKLIB process
     args = ['./rtkrcv', '-s', '-o', new_file_name]
-    subprocess.Popen(args, stdout=subprocess.DEVNULL)
+    subprocess.Popen(args)
 
 def run_aggregator_server():
     aggregator = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
