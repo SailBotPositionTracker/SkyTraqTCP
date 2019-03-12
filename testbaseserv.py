@@ -34,6 +34,9 @@ AGGSERV = "AGG_SERV"
 #RTKLIB output client print abbreviation
 RTKOUTCLI = "RTKLIB_OUT_CLI"
 
+#cutoff length for output messages
+CUTOFF_LEN = 130
+
 #map from tracker IDs to TCP client objects
 tracker_input_map = {}
 
@@ -41,7 +44,12 @@ trackserv_conn_list = []
 aggserv_conn_list = []
 
 def eprint(mess, func_name):
-    sys.stdout.write('[' + func_name + ']: ' + mess + '\n')
+    final_mess = '[' + func_name + ']: ' + mess
+    mess_len = len(final_mess)
+    if (mess_len > CUTOFF_LEN):
+        sys.stdout.write(final_mess[:CUTOFF_LEN] + '...(+' + str(mess_len - CUTOFF_LEN) + ')\n')
+    else:
+        sys.stdout.write(final_mess + '\n')
 
 def handle_tracker_connections():
     #TODO creating a thread for each connection might perform better than a for loop here for large numbers of trackers
@@ -62,7 +70,7 @@ def handle_tracker_connections():
                 #TODO for testing
                 gps_message = data
                 #gps_message = parts[1]
-                #eprint(tracker_id + ': received gps message: ' + str(gps_message), TRACKSERV)
+                eprint(tracker_id + ': GPS message: ' + str(gps_message), TRACKSERV)
                 #send its data along to its associated RTKLIB
                 tracker_input_map[tracker_id].sendall(gps_message)
             else:
@@ -162,12 +170,16 @@ def output_sock(tracker_id, output_port):
 
 def parse_data_from_rtklib(tracker_id, data):
     #input format example: '2038, 417928.999, 1.000, 2.000, 3.000, 5, 7, 6.6558, 3.1100, 2.8179, -3.3301, 1.9243, -3.2028, 0.00, 0.0'
-    #output format example: 'T1234,0001,0000001.000,000000001.0000,000000002.0000'
+    #output format example: '12345,0001,0000001.000,-000000001.0000,-000000001.0000'
     data_parts = data.decode('UTF-8').split(',')
+    #WWWW (unsigned)
     gpst_week = "{:4.0f}".format(float(data_parts[0]))
-    gpst_seconds = "{:10.3f}".format(float(data_parts[1]))
-    east = "{:14.4f}".format(float(data_parts[2]))
-    north = "{:14.4f}".format(float(data_parts[3]))
+    #SSSSSSS.SSS (unsigned)
+    gpst_seconds = "{:11.3f}".format(float(data_parts[1]))
+    #+eeeeeeeee.eeee (signed)
+    east = "{:15.4f}".format(float(data_parts[2]))
+    #+nnnnnnnnn.nnnn (signed)
+    north = "{:15.4f}".format(float(data_parts[3]))
     out_str = "{},{},{},{},{}".format(tracker_id, gpst_week, gpst_seconds, east, north)
     return out_str.encode('UTF-8')
 
