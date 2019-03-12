@@ -25,6 +25,10 @@
 #include "driver/uart.h"
 #include "driver/gpio.h"
 #define BLINK_GPIO CONFIG_BLINK_GPIO
+#define ECHO_TEST_TXD  (GPIO_NUM_4)
+#define ECHO_TEST_RXD  (GPIO_NUM_5)
+#define ECHO_TEST_RTS  (UART_PIN_NO_CHANGE)
+#define ECHO_TEST_CTS  (UART_PIN_NO_CHANGE)
 
 
 
@@ -175,42 +179,36 @@ void app_main()
     if (result != 0) {
         ESP_LOGI(TAG, "Connection failed: errno=%d", errno);
     }
-
+    
     // Configure UART
     const int uart_num = UART_NUM_2;
     uart_config_t uart_config = {
         .baud_rate = 115200,
         .data_bits = UART_DATA_8_BITS,
-        .parity = UART_PARITY_DISABLE,
+        .parity    = UART_PARITY_DISABLE,
         .stop_bits = UART_STOP_BITS_1,
-        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
-        .rx_flow_ctrl_thresh = 122,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE
     };
-    ESP_ERROR_CHECK(uart_param_config(uart_num, &uart_config));
-
-    // Install UART driver
-    const int uart_buffer_size = (1024*2);
-    QueueHandle_t uart_queue;
-    ESP_ERROR_CHECK(uart_driver_install(uart_num, uart_buffer_size, \
-                uart_buffer_size, 10, &uart_queue, 0));
+    uart_param_config(uart_num, &uart_config);
+    uart_set_pin(uart_num, ECHO_TEST_TXD, ECHO_TEST_RXD, ECHO_TEST_RTS, ECHO_TEST_CTS);
+    uart_driver_install(uart_num, 1024 * 2, 0, 0, NULL, 0);
 
     while(!result) {
         int len;
         ESP_ERROR_CHECK(uart_get_buffered_data_len(uart_num, (size_t*) &len));
         ESP_LOGI(TAG, "%d bytes from UART", len);
-        if (len >= 44) {
-            len = uart_read_bytes(uart_num, buf, 44, 10);
-            if (len == 44) {
-                write(base_fd, tracker_id, 6);
-                write(base_fd, buf, 44);
-                ESP_LOGI(TAG, "wrote GPS Message: %d bytes", 44);
+        if (len >= 16) {
+            len = uart_read_bytes(uart_num, buf, 16, 10);
+            if (len == 16) {
+                /* write(base_fd, tracker_id, 6); */
+                write(base_fd, buf, 16);
+                ESP_LOGI(TAG, "wrote GPS Message: %d bytes", 16);
             } 
         }
-        char msg[58]= "12345\t$GPGLL,2447.0944,N,12100.5213,E,112609.932,A,A*57\r\n";
+        /* char msg[58]= "12345\t$GPGLL,2447.0944,N,12100.5213,E,112609.932,A,A*57\r\n"; */
 
-        int bytes = write(base_fd, msg, 57);
-        ESP_LOGI(TAG, "wrote %d bytes to base", bytes);
-        sleep(1);
+        /* int bytes = write(base_fd, msg, 57); */
+        /* ESP_LOGI(TAG, "wrote %d bytes to base", bytes); */
 
     }
 
