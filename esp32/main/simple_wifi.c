@@ -162,6 +162,7 @@ void app_main()
     unsigned char tracker_id[7] = "00001\t";
     memset(buf, '\0', 45);
 
+    // Connect to Base tcp server
     int base_fd = socket(AF_INET, SOCK_STREAM, 0);
 
     struct sockaddr_in base_addr;
@@ -175,18 +176,42 @@ void app_main()
         ESP_LOGI(TAG, "Connection failed: errno=%d", errno);
     }
 
+    // Configure UART
+    const int uart_num = UART_NUM_2;
+    uart_config_t uart_config = {
+        .baud_rate = 115200,
+        .data_bits = UART_DATA_8_BITS,
+        .parity = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+        .rx_flow_ctrl_thresh = 122,
+    };
+    ESP_ERROR_CHECK(uart_param_config(uart_num, &uart_config));
+
+    // Install UART driver
+    const int uart_buffer_size = (1024*2);
+    QueueHandle_t uart_queue;
+    ESP_ERROR_CHECK(uart_driver_install(uart_num, uart_buffer_size, \
+                uart_buffer_size, 10, &uart_queue, 0));
+
     while(!result) {
-
-        if (uart_get_buffered_data_len() >= 44)
-        /* if (uart_read_bytes(UART_NUM_0, buf, 44, 1) == 44) { */
+        int len;
+        ESP_ERROR_CHECK(uart_get_buffered_data_len(uart_num, (size_t*) &len));
+        ESP_LOGI(TAG, "%d bytes from UART", len);
+        if (len >= 44) {
+            len = uart_read_bytes(uart_num, buf, 44, 10);
+            if (len == 44) {
+                write(base_fd, tracker_id, 6);
+                write(base_fd, buf, 44);
+                ESP_LOGI(TAG, "wrote GPS Message: %d bytes", 44);
+            } 
+        }
         char msg[58]= "12345\t$GPGLL,2447.0944,N,12100.5213,E,112609.932,A,A*57\r\n";
-        int bytes = write(base_fd, msg, 57);
-        ESP_LOGI(TAG, "wrote GPS Message: %d bytes", bytes);
-        sleep(1);
-        
 
-            /* write(base_fd, tracker_id, 6); */
-            /* write(base_fd, buf, 44); */
-        /* } */
+        int bytes = write(base_fd, msg, 57);
+        ESP_LOGI(TAG, "wrote %d bytes to base", bytes);
+        sleep(1);
+
     }
+
 }
