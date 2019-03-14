@@ -41,6 +41,8 @@ CUTOFF_LEN = 130
 
 #map from tracker IDs to TCP RTKLIB input client objects
 tracker_input_map = {}
+#map from tracker IDs to TCP RTKLIB output client objects
+tracker_output_map = {}
 
 #list of uninitialized tracker connections
 trackserv_init_list = []
@@ -81,7 +83,6 @@ def handle_tracker_init():
                     trackserv_conn_map[connection] = tracker_id
                     for conn in trackserv_conn_map.keys():
                         if trackserv_conn_map[conn] == tracker_id:
-                            eprint(tracker_id + ': old connection deleted', TRACKINIT)
                             del trackserv_conn_map[conn]
                             break
                     connection.sendall(b'OK')
@@ -119,6 +120,8 @@ def close_tracker_connection(connection):
     connection.close()
     tracker_input_map[tracker_id].close()
     del tracker_input_map[tracker_id]
+    tracker_output_map[tracker_id].close()
+    del tracker_output_map[tracker_id]
     
 def handle_tracker_connections():
     #TODO creating a thread for each connection might perform better than a for loop here for large numbers of trackers
@@ -197,6 +200,7 @@ def output_sock(tracker_id, output_port):
     output_sock_address = ('127.0.0.1', output_port)
     eprint(tracker_id + '(' + output_sock_address[0] + ":" + str(output_sock_address[1]) + '): started up RTKLIB output client', RTKOUTCLI)
     output_sock.connect(output_sock_address)
+    tracker_output_map[tracker_id] = output_sock
     eprint(tracker_id + ': output connection established with RTKLIB', RTKOUTCLI)
     while True:
         try:
@@ -210,11 +214,15 @@ def output_sock(tracker_id, output_port):
             if data[0] != 37:
                 parsed_data = parse_data_from_rtklib(tracker_id, data)
                 for ext_conn in aggserv_conn_list:
-                    ext_conn.sendall(parsed_data)
+                    try:
+                        ext_conn.sendall(parsed_data)
+                    except socket.error as err:
+                        eprint('socket closed (write refused): ' + str(err), AGGSERV)
+                        aggserv_conn_list.remove(ext_conn)
         else:
             eprint(tracker_id + ': socket closed', RTKOUTCLI)
             break
-    #TODO is this correct?
+        
     output_sock.close()
 
 def parse_data_from_rtklib(tracker_id, data):
