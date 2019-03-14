@@ -29,6 +29,8 @@ AGGSERV_ADDR = (IP, AGGSERV_PORT)
 
 #tracker server print abbreviation
 TRACKSERV = "TRACK_SERV"
+#tracker initialization loop print abbreviation
+TRACKINIT = "TRACK_SERV_INIT"
 #aggregation server print abbreviation
 AGGSERV = "AGG_SERV"
 #RTKLIB output client print abbreviation
@@ -37,10 +39,14 @@ RTKOUTCLI = "RTKLIB_OUT_CLI"
 #cutoff length for output messages
 CUTOFF_LEN = 130
 
-#map from tracker IDs to TCP client objects
+#map from tracker IDs to TCP RTKLIB input client objects
 tracker_input_map = {}
 
-trackserv_conn_list = []
+#list of uninitialized tracker connections
+trackserv_init_list = []
+
+#map from TCP tracker client objects to tracker IDs
+trackserv_conn_map = {}
 aggserv_conn_list = []
 
 def eprint(mess, func_name):
@@ -51,39 +57,100 @@ def eprint(mess, func_name):
     else:
         sys.stdout.write(final_mess + '\n')
 
+def close_init_connection(connection):
+    trackserv_init_list.remove(connection)
+    connection.close()
+
+def handle_tracker_init():
+    while True:
+        readable, _, error = select.select(trackserv_init_list, [], [], 1)
+        #eprint(len(readable) + ", " + len(error), TRACKINIT)
+        for connection in readable:
+            try:
+                #read in a 5-digit (fixed length) tracker ID
+                data = connection.recv(5)
+            except socket.error as err:
+                eprint(tracker_id + ': socket closed (socket error during read)', TRACKINIT)
+                close_init_connection(connection)
+                continue
+            if data != b'':
+                trackserv_init_list.remove(connection)
+                tracker_id = data.decode('UTF-8')
+                if tracker_id in trackserv_conn_map.values():
+                    eprint(tracker_id + ': tracker reconnected', TRACKINIT)
+                    trackserv_conn_map[connection] = tracker_id
+                    for conn in trackserv_conn_map.keys():
+                        if trackserv_conn_map[conn] == tracker_id:
+                            eprint(tracker_id + ': old connection deleted', TRACKINIT)
+                            del trackserv_conn_map[conn]
+                            break
+                    connection.sendall(b'OK')
+                    continue
+                eprint(tracker_id + ': new tracker connection established', TRACKINIT)
+                #obtain free input and output ports for use by RTKLIB
+                input_port = get_free_tcp_port()
+                output_port = get_free_tcp_port()
+                #spawn RTKLIB process with these params
+                spawn_rtklib(input_port, output_port, tracker_id)
+                #wait for RTKLIB to get its network all set up
+                time.sleep(3)
+                #create the output client for interfacing with RTKLIB
+                _thread.start_new_thread(output_sock, (tracker_id, output_port))
+                #create the input client for interfacing with RTKLIB
+                input_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                input_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                input_sock_address = ('127.0.0.1', input_port)
+                input_sock.connect(input_sock_address)
+                #keep track of input client and associated tracker_id
+                tracker_input_map[tracker_id] = input_sock
+                trackserv_conn_map[connection] = tracker_id
+                #tell tracker we're ready to receive GPS data
+                connection.sendall(b'OK')
+            else:
+                eprint('tracker_id not yet sent for new connection', TRACKINIT)
+                time.sleep(5)
+        for connection in error:
+            eprint(tracker_id + ': socket error (socket error by select)', TRACKINIT)
+            close_init_connection(connection)
+
+def close_tracker_connection(connection):
+    tracker_id = trackserv_conn_map[connection]
+    del trackserv_conn_map[connection]
+    connection.close()
+    tracker_input_map[tracker_id].close()
+    del tracker_input_map[tracker_id]
+    
 def handle_tracker_connections():
     #TODO creating a thread for each connection might perform better than a for loop here for large numbers of trackers
     while True:
-        readable, _, _ = select.select(trackserv_conn_list, [], [], 1)
+        readable, writable, error = select.select(list(trackserv_conn_map.keys()), [], [], 1)
         for connection in readable:
+            tracker_id = trackserv_conn_map[connection]
             try:
                 data = connection.recv(4096)
             except socket.error as err:
-                eprint(tracker_id + ': socket error: ' + str(err), TRACKSERV)
+                eprint(tracker_id + ': socket closed (socket error during read)', TRACKSERV)
+                close_tracker_connection(connection)
                 continue
             if data != b'':
-                #TODO for testing
-                tracker_id = "T1234"
-                #print(len(data))
-                #parts = data.split('\t', 1)
-                #tracker_id = parts[0]
-                #TODO for testing
                 gps_message = data
-                #gps_message = parts[1]
                 eprint(tracker_id + ': GPS message: ' + str(gps_message), TRACKSERV)
                 #send its data along to its associated RTKLIB
                 tracker_input_map[tracker_id].sendall(gps_message)
             else:
-                #tracker connection closed remotely, clean everything up
-                eprint(tracker_id + ': socket closed', TRACKSERV)
-                connection.close()
-                trackserv_conn_list.remove(connection)
-                tracker_input_map[tracker_id].close()
-                del tracker_input_map[tracker_id]
+                eprint(tracker_id + ': socket closed (read empty string)', TRACKSERV)
+                close_tracker_connection(connection)
+        for connection in error:
+            eprint(tracker_id + ': socket error (socket error by select)', TRACKSERV)
+            close_tracker_connection(connection)
 
 def run_tracker_server():
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    sock.setsockopt(socket.SOL_TCP, socket.TCP_KEEPIDLE, 1)
+    sock.setsockopt(socket.SOL_TCP, socket.TCP_KEEPINTVL, 15)
+    sock.setsockopt(socket.SOL_TCP, socket.TCP_KEEPCNT, 1)
     eprint('(' + TRACKSERV_ADDR[0] + ":" + str(TRACKSERV_ADDR[1]) + '): starting up tracker server', TRACKSERV)
     sock.bind(TRACKSERV_ADDR)
     #allow a maximum of 200 connected boats
@@ -91,26 +158,8 @@ def run_tracker_server():
     #listen for connections from trackers
     while True:
         connection, client_address = sock.accept()
-        if connection not in trackserv_conn_list:
-            #TODO for testing
-            tracker_id = "T1234"
-            data = connection.recv(4096)
-            #print(len(data))
-            #parts = data.split('\t', 1)
-            #tracker_id = parts[0]
-            eprint(tracker_id + '(' + client_address[0] + ":" + str(client_address[1]) + '): new tracker connection established', TRACKSERV)
-            input_port = get_free_tcp_port()
-            output_port = get_free_tcp_port()
-            #spawn RTKLIB process with these params
-            spawn_rtklib(input_port, output_port, tracker_id)
-            time.sleep(3)
-            _thread.start_new_thread(output_sock, (tracker_id, output_port))
-            input_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            input_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            input_sock_address = ('127.0.0.1', input_port)
-            input_sock.connect(input_sock_address)
-            tracker_input_map[tracker_id] = input_sock
-            trackserv_conn_list.append(connection)
+        if (connection not in list(trackserv_conn_map.keys())) and (connection not in trackserv_init_list):
+            trackserv_init_list.append(connection)
 
 def spawn_rtklib(input_port, output_port, tracker_id):
     eprint('RTKLIB input port: ' + str(input_port) + ', output port: ' + str(output_port), TRACKSERV)
@@ -187,5 +236,6 @@ if __name__ == "__main__":
     with open(CONFIG_FILE, 'r') as myfile:
         CONFIG = myfile.read()
     _thread.start_new_thread(run_aggregator_server, ())
+    _thread.start_new_thread(handle_tracker_init, ())
     _thread.start_new_thread(handle_tracker_connections, ())
     run_tracker_server()
