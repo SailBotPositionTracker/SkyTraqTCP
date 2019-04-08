@@ -162,8 +162,8 @@ void app_main()
     xEventGroupWaitBits(wifi_event_group, WIFI_CONNECTED_BIT, pdFALSE,
             pdFALSE, -1);
 
-    uint8_t buf[45]; 
-    unsigned char tracker_id[7] = "00001\t";
+    uint8_t buf[1024]; 
+    unsigned char tracker_id[6] = "55555";
     memset(buf, '\0', 45);
 
     // Connect to Base tcp server
@@ -175,13 +175,34 @@ void app_main()
     base_addr.sin_addr.s_addr = inet_addr("192.168.4.1");
     memset(base_addr.sin_zero, '\0', sizeof(base_addr.sin_zero));
 
-    int result = connect(base_fd, (struct sockaddr *) &base_addr, sizeof base_addr);
-    if (result != 0) {
-        ESP_LOGI(TAG, "Connection failed: errno=%d", errno);
+    ESP_LOGI(TAG, "Sizeof size_t is %d", sizeof(size_t));
+    int result = 0;
+    sleep(1);
+    while (!result) {
+        result = connect(base_fd, (struct sockaddr *) &base_addr, sizeof base_addr);
+        if (result != 0) {
+            ESP_LOGI(TAG, "Base connection failed: errno=%d", errno);
+            sleep(2);
+        }
     }
+
+    ESP_LOGI(TAG, "Connected to base");
+
+    char reg_buf[2];
+    int count;
+    do {
+        write(base_fd, tracker_id, 5);
+        sleep(1);
+        count = read(base_fd, reg_buf, 2);
+        if (count == -1) {
+            ESP_LOGI(TAG, "Base connection failed: errno=%d", errno);
+        }
+    } while (count != 2 || strncmp("OK", reg_buf, 2));
+
+    ESP_LOGI(TAG, "Registered tracker with base");
     
     // Configure UART
-    const int uart_num = UART_NUM_2;
+    const int uart_num = UART_NUM_1;
     uart_config_t uart_config = {
         .baud_rate = 115200,
         .data_bits = UART_DATA_8_BITS,
@@ -193,23 +214,22 @@ void app_main()
     uart_set_pin(uart_num, ECHO_TEST_TXD, ECHO_TEST_RXD, ECHO_TEST_RTS, ECHO_TEST_CTS);
     uart_driver_install(uart_num, 1024 * 2, 0, 0, NULL, 0);
 
-    while(!result) {
-        int len;
-        ESP_ERROR_CHECK(uart_get_buffered_data_len(uart_num, (size_t*) &len));
-        ESP_LOGI(TAG, "%d bytes from UART", len);
-        if (len >= 16) {
-            len = uart_read_bytes(uart_num, buf, 16, 10);
-            if (len == 16) {
-                /* write(base_fd, tracker_id, 6); */
-                write(base_fd, buf, 16);
-                ESP_LOGI(TAG, "wrote GPS Message: %d bytes", 16);
-            } 
+    
+    while (1) {
+        size_t len;
+        ESP_ERROR_CHECK(uart_get_buffered_data_len(uart_num, &len));
+        if (len > 0) {
+            int read_len = uart_read_bytes(uart_num, buf, len, 10);
+            ESP_LOGI(TAG, "%d bytes from UART", read_len);
+            if (read_len != len) {
+                ESP_LOGE(TAG, "Read %d bytes, but expected %d bytes", read_len, len);
+            }
+            int write_len = write(base_fd, buf, read_len);
+            if (write_len == -1) {
+                esp_restart();
+            }
+            ESP_LOGI(TAG, "wrote GPS Message: %d bytes", write_len);
         }
-        /* char msg[58]= "12345\t$GPGLL,2447.0944,N,12100.5213,E,112609.932,A,A*57\r\n"; */
-
-        /* int bytes = write(base_fd, msg, 57); */
-        /* ESP_LOGI(TAG, "wrote %d bytes to base", bytes); */
-
     }
 
 }
